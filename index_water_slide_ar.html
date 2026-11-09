@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Water Jump / Black Slide — WebAR</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#090b10;color:white;font-family:system-ui,'Malgun Gothic',sans-serif}#ar{position:fixed;inset:0}#intro{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:#10131beF;padding:24px}.panel{max-width:440px;text-align:center}.panel img{width:100%;max-height:220px;object-fit:contain;border-radius:12px}.panel p{color:#cbd1db;line-height:1.6}button{border:0;border-radius:30px;background:#d8f4ff;color:#14232e;font-weight:700;padding:13px 25px;font-size:16px;cursor:pointer}#hud{position:fixed;top:12px;left:12px;z-index:5;padding:10px 14px;background:#000a;border-radius:12px;font-size:13px;white-space:pre-line;pointer-events:none}#error{color:#ffb9b9}#preview{position:fixed;right:12px;bottom:12px;width:190px;max-width:45vw;z-index:6;border:1px solid #ffffff66;border-radius:10px;overflow:hidden;background:#111;display:none}#preview canvas{width:100%;display:block}#preview label{display:block;padding:5px 8px;font-size:11px;background:#000b}#toolbar{position:fixed;bottom:12px;left:12px;z-index:6;display:flex;gap:8px}#toolbar button{font-size:12px;padding:9px 13px;background:#ffffffdd}#toolbar[hidden]{display:none}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/","mindar-image-three":"https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"}}</script>
+</head><body>
+<div id="ar"></div><div id="intro"><div class="panel"><h2>WATER / BLACK — AR</h2><img src="./reference.png" alt="인식할 작품 이미지"><p>카메라로 작품 이미지를 비추세요.<br>물 영역에서는 <b>점프</b>, 검은 구조물에서는 <b>슬라이드</b>합니다.</p><button id="start">AR 시작</button><p style="font-size:12px">HTTPS 또는 localhost에서 실행 · 카메라 권한 필요<br>reference.png와 targets.mind가 같은 폴더에 있어야 합니다.</p><div id="error"></div></div></div>
+<div id="hud" hidden>이미지 인식 대기 중</div><div id="toolbar" hidden><button id="togglePreview">경로 미리보기</button><button id="restart">동작 다시 시작</button></div><div id="preview"><label>파랑: 물(점프) / 주황: 검은 구조물(슬라이드)</label><canvas id="map" width="586" height="410"></canvas></div>
+<script type="module">
+import * as THREE from 'three';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+import {MindARThree} from 'mindar-image-three';
+const CFG={target:'./targets.mind',reference:'./reference.png',model:'./character.glb',modelHeight:0.16,speed:0.19,waterClip:'Jump',blackClip:'Slide',idleClip:'Idle'};
+// 좌표는 원본 이미지의 왼쪽 위 (0,0), 오른쪽 아래 (1,1).
+// route는 캐릭터가 실제로 이동하는 경로. 각 점의 mode는 다음 점까지의 지형.
+// 작품의 어두운 대각선 구조물 위를 따라가다가 물로 넘어가는 연출.
+const route=[
+ {x:.07,y:.80,mode:'black'}, {x:.19,y:.85,mode:'black'}, {x:.31,y:.89,mode:'black'},
+ {x:.40,y:.75,mode:'water'}, {x:.46,y:.64,mode:'water'}, {x:.53,y:.56,mode:'water'},
+ {x:.61,y:.47,mode:'water'}, {x:.68,y:.55,mode:'water'},
+ {x:.73,y:.72,mode:'black'}, {x:.81,y:.59,mode:'black'}, {x:.89,y:.46,mode:'black'},
+ {x:.81,y:.36,mode:'water'}, {x:.70,y:.29,mode:'water'}, {x:.60,y:.33,mode:'water'},
+ {x:.48,y:.40,mode:'water'}, {x:.36,y:.46,mode:'water'},
+ {x:.25,y:.42,mode:'black'}, {x:.16,y:.33,mode:'black'}, {x:.09,y:.24,mode:'black'},
+ {x:.07,y:.80,mode:'black'}
+];
+const W=1172,H=820,aspect=H/W;
+const mindar=new MindARThree({container:document.querySelector('#ar'),imageTargetSrc:CFG.target,maxTrack:1,filterMinCF:.0001,filterBeta:.001,missTolerance:8,warmupTolerance:3});
+const {renderer,scene,camera}=mindar;
+scene.add(new THREE.HemisphereLight(0xffffff,0x596579,2.5));const light=new THREE.DirectionalLight(0xffffff,2);light.position.set(0,1,2);scene.add(light);
+const anchor=mindar.addAnchor(0);const mover=new THREE.Group();anchor.group.add(mover);
+// 이미지 앵커의 평면은 XY, +Z가 종이 바깥쪽. 캐릭터의 +Y를 +Z로 돌린다.
+const upright=new THREE.Group();upright.rotation.x=Math.PI/2;mover.add(upright);
+const animated=new THREE.Group();upright.add(animated);
+let mixer=null,actions={},activeClip='',isFallback=true,modelRoot=null;
+function fallback(){const g=new THREE.Group(),mat=new THREE.MeshStandardMaterial({color:0x95e8ff,metalness:.28,roughness:.28});const body=new THREE.Mesh(new THREE.CapsuleGeometry(.18,.34,6,16),mat);body.position.y=.36;g.add(body);const eyes=new THREE.MeshStandardMaterial({color:0x102232});for(const x of [-.09,.09]){const e=new THREE.Mesh(new THREE.SphereGeometry(.035,12,12),eyes);e.position.set(x,.48,.19);g.add(e)}const ring=new THREE.Mesh(new THREE.TorusGeometry(.20,.018,6,24),new THREE.MeshBasicMaterial({color:0xffffff}));ring.rotation.x=Math.PI/2;ring.position.y=.04;g.add(ring);return g}
+function fit(obj){obj.updateMatrixWorld(true);let b=new THREE.Box3().setFromObject(obj),s=b.getSize(new THREE.Vector3());obj.scale.multiplyScalar(CFG.modelHeight/Math.max(s.y,.0001));obj.updateMatrixWorld(true);b=new THREE.Box3().setFromObject(obj);const c=b.getCenter(new THREE.Vector3());obj.position.x-=c.x;obj.position.z-=c.z;obj.position.y-=b.min.y}
+async function loadCharacter(){try{const gltf=await new GLTFLoader().loadAsync(CFG.model);modelRoot=gltf.scene;fit(modelRoot);animated.add(modelRoot);isFallback=false;if(gltf.animations.length){mixer=new THREE.AnimationMixer(modelRoot);for(const clip of gltf.animations)actions[clip.name.toLowerCase()]=mixer.clipAction(clip)}}catch(e){console.info('character.glb 미제공: 기본 캐릭터 사용');modelRoot=fallback();fit(modelRoot);animated.add(modelRoot)}}
+function clip(name){if(!mixer)return;const key=name.toLowerCase();if(key===activeClip)return;const next=actions[key]||actions[CFG.idleClip.toLowerCase()];if(!next)return;const old=actions[activeClip];if(old&&old!==next)old.fadeOut(.18);next.reset().fadeIn(.18).play();activeClip=key}
+function positionAt(u){let length=0;const lengths=[];for(let i=0;i<route.length-1;i++){const a=route[i],b=route[i+1];const l=Math.hypot(b.x-a.x,(b.y-a.y)*aspect);lengths.push(l);length+=l}let target=(u%1)*length;for(let i=0;i<lengths.length;i++){if(target<=lengths[i]||i===lengths.length-1){const a=route[i],b=route[i+1],t=lengths[i]?target/lengths[i]:0;return{x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,dx:b.x-a.x,dy:b.y-a.y,mode:a.mode}}target-=lengths[i]}return {...route[0],dx:1,dy:0}}
+let visible=false,elapsed=0,mode='',previewOn=false;const hud=document.querySelector('#hud');anchor.onTargetFound=()=>{visible=true};anchor.onTargetLost=()=>{visible=false};
+function update(dt){if(!visible){hud.textContent='작품 이미지를 찾는 중…';return}elapsed+=dt;const p=positionAt(elapsed*CFG.speed/3);mover.position.set(p.x-.5,(.5-p.y)*aspect,.012);upright.rotation.y=Math.atan2(p.dx,-p.dy*aspect)+Math.PI/2;
+ const phase=elapsed*10;if(p.mode==='water'){animated.position.y=Math.abs(Math.sin(phase*.65))*CFG.modelHeight*.55;animated.scale.set(1,1,1);upright.rotation.z=0;clip(CFG.waterClip)}else{animated.position.y=0;animated.scale.set(1.25,.46,1);upright.rotation.z=-.20;clip(CFG.blackClip)}
+ mixer?.update(dt);mode=p.mode;hud.textContent=`● 이미지 인식 중\n영역: ${mode==='water'?'물 / JUMP':'검은 구조물 / SLIDE'}\n캐릭터: ${isFallback?'기본 도형':'GLB 모델'}`;drawPreview(p)}
+const cv=document.querySelector('#map'),ctx=cv.getContext('2d'),ref=new Image();ref.src=CFG.reference;ref.onload=()=>drawPreview(positionAt(0));
+function drawPreview(p){if(!previewOn)return;ctx.clearRect(0,0,cv.width,cv.height);if(ref.complete&&ref.naturalWidth)ctx.drawImage(ref,0,0,cv.width,cv.height);for(let i=0;i<route.length-1;i++){const a=route[i],b=route[i+1];ctx.beginPath();ctx.moveTo(a.x*cv.width,a.y*cv.height);ctx.lineTo(b.x*cv.width,b.y*cv.height);ctx.strokeStyle=a.mode==='water'?'#52d8ff':'#ffab52';ctx.lineWidth=6;ctx.stroke()}ctx.beginPath();ctx.arc(p.x*cv.width,p.y*cv.height,8,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill()}
+document.querySelector('#togglePreview').onclick=()=>{previewOn=!previewOn;document.querySelector('#preview').style.display=previewOn?'block':'none';drawPreview(positionAt(elapsed*CFG.speed/3))};document.querySelector('#restart').onclick=()=>{elapsed=0;mode=''};
+document.querySelector('#start').onclick=async()=>{const b=document.querySelector('#start'),err=document.querySelector('#error');b.disabled=true;b.textContent='카메라 준비 중…';try{await loadCharacter();await mindar.start();document.querySelector('#intro').remove();hud.hidden=false;document.querySelector('#toolbar').hidden=false;const clock=new THREE.Clock();renderer.setAnimationLoop(()=>{update(Math.min(clock.getDelta(),.08));renderer.render(scene,camera)})}catch(e){console.error(e);err.textContent='시작 실패: HTTPS/카메라 권한/targets.mind 파일을 확인하세요. '+e.message;b.disabled=false;b.textContent='다시 시도'}};
+</script></body></html>
